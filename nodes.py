@@ -19,6 +19,8 @@ class BaseNode(QGraphicsEllipseItem):
         self.setPos(x, y)
         self.radius = radius
         self.color_name = color
+        self.color = color
+        self.color_name = color  # (jeśli używasz color_name gdzie indziej)
         self.is_player = is_player
         self.unit_count = initial_units
         self.node_type = node_type

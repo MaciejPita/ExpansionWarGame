@@ -1,11 +1,16 @@
+import json
 import logging
 import random
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF, QObject
 from PyQt5.QtCore import QPointF, QTimer
 from PyQt5.QtGui import QPixmap, QBrush, QColor, QPainter
 from PyQt5.QtWidgets import QLabel, QGraphicsPixmapItem, QHBoxLayout, QWidget, QPushButton, QGraphicsView, \
     QGraphicsScene, QVBoxLayout, QGraphicsItem
+from mongo_client import game_history_collection
+
 from nodes import BaseNode, ConnectionLine, PreviewLine, HintLine
+
+import xml.etree.ElementTree as ET
 
 
 
@@ -20,9 +25,13 @@ class GameEndOverlay(QGraphicsItem):
         self.confetti_particles = []
         self.setZValue(100)
 
-        self.timer = QTimer()
+        self._timer_owner = QObject()  # trzyma timer "przy życiu"
+        self.timer = QTimer(self._timer_owner)
         self.timer.timeout.connect(self.fade_in)
         self.timer.start(40)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.ItemIsMovable, False)
+        self.setAcceptedMouseButtons(Qt.NoButton)
 
     def boundingRect(self):
         return QRectF(0, 0, 1024, 768)
@@ -69,9 +78,9 @@ class GameEndOverlay(QGraphicsItem):
             })
 
 class GameView(QGraphicsView):
-    def __init__(self, level_data, level_name, main_window):
-        self.logger = logging.getLogger("WojnaEkspansji")
-        self.logger.info(f"Inicjalizacja GameView dla poziomu: {level_name}")
+    def __init__(self, level_data, level_name, main_window, mode="single"):
+
+        self.mode = mode
         super().__init__()
         self.scene = QGraphicsScene()
         self.setScene(self.scene)
@@ -121,6 +130,18 @@ class GameView(QGraphicsView):
 
         self.node_placement_used = False  # gracz może tylko raz dodać węzeł
 
+        self.game_history_events = []
+
+    def log_event(self, type_, source, target, by):
+        time_stamp = 120 - self.round_time_seconds
+        self.game_history_events.append({
+            "type": type_,
+            "from": source,
+            "to": target,
+            "by": by,
+            "time": time_stamp
+        })
+
     def update_round_timer(self):
         self.round_time_seconds -= 1
         minutes = self.round_time_seconds // 60
@@ -165,21 +186,24 @@ class GameView(QGraphicsView):
         red_nodes = [n for n in self.nodes if not n.is_player]
 
         if not green_nodes:
-            self.show_end_message("Przegrałeś")
+            self.show_end_message("Przegrałeś", "Twoje jednostki zostały pokonane.")
         elif not red_nodes:
-            self.show_end_message("Wygrałeś")
+            self.show_end_message("Wygrałeś", "Pokonałeś wszystkich przeciwników!")
 
     def show_end_message(self, title, message):
+
+        self.save_game_history(f"historia_{self.level_name}.xml")
+
         self.round_timer.stop()
         self.ai_timer.stop()
         self.flash_timer.stop()
         for node in self.nodes:
             node.production_timer.stop()
 
-        is_win = (title == "Wygrana")
+        is_win = "wygra" in title.lower() or "wygrana" in title.lower()
         color = QColor("green") if is_win else QColor("red")
 
-        self.overlay_ref = GameEndOverlay(message, color)
+        self.overlay_ref = GameEndOverlay(message, color, is_win=is_win)
         self.scene.addItem(self.overlay_ref)
 
         # Bezpieczny powrót do menu
@@ -214,6 +238,13 @@ class GameView(QGraphicsView):
                 line = ConnectionLine(red_node, target, self.scene)
                 self.scene.addItem(line)
                 red_node.register_connection()
+                self.log_event(
+                    type_="attack",
+                    source=self.nodes.index(red_node),
+                    target=self.nodes.index(target),
+                    by="AI"
+                )
+
         self.check_game_over()
 
     def create_scene(self):
@@ -543,7 +574,12 @@ class GameView(QGraphicsView):
                     line = ConnectionLine(self.selected_node, target_item, self.scene)
                     self.scene.addItem(line)
                     self.selected_node.register_connection()
-            self.selected_node.register_connection()
+                    self.log_event(
+                        type_="attack" if target_item.color_name == "red" else "support",
+                        source=self.nodes.index(self.selected_node),
+                        target=self.nodes.index(target_item),
+                        by="player"
+                    )
             self.check_game_over()
 
         self.selected_node = None
@@ -581,6 +617,121 @@ class GameView(QGraphicsView):
         if self.pulsing_node:
             self.pulsing_node.stop_pulsing()
             self.pulsing_node = None
+
+    def load_game_history(self, filename):
+        tree = ET.parse(filename)
+        root = tree.getroot()
+        self.level_name = root.attrib.get("level", "unknown")
+
+        self.nodes = []
+        self.scene.clear()
+
+        node_map = {}
+        for node_elem in root.findall("node"):
+            x = int(node_elem.attrib["x"])
+            y = int(node_elem.attrib["y"])
+            color = node_elem.attrib["color"]
+            units = int(node_elem.attrib["units"])
+            node_type = node_elem.attrib["type"]
+
+            node = BaseNode(x=x, y=y, radius=30, color=color,
+                            is_player=(color == "green"), initial_units=units,
+                            node_type=node_type, max_connections=3)
+            self.scene.addItem(node)
+            self.nodes.append(node)
+            node_map[node_elem.attrib["id"]] = node
+
+        for conn in root.findall("connection"):
+            src = node_map.get(conn.attrib["from"])
+            tgt = node_map.get(conn.attrib["to"])
+            if src and tgt:
+                line = ConnectionLine(src, tgt, self.scene)
+                self.scene.addItem(line)
+
+    def save_game_history(self, filename="historia.xml"):
+        try:
+            print("===> Rozpoczynam zapis historii gry...")
+
+            root = ET.Element("game", level=self.level_name, duration=str(120 - self.round_time_seconds))
+
+            node_id_map = {}
+            for idx, node in enumerate(self.nodes):
+                try:
+                    node_id = str(idx)
+                    node_id_map[node] = node_id
+                    ET.SubElement(root, "node", {
+                        "id": node_id,
+                        "x": str(int(node.pos().x())),
+                        "y": str(int(node.pos().y())),
+                        "color": getattr(node, "color", "unknown"),
+                        "units": str(node.unit_count),
+                        "type": node.node_type
+                    })
+                except Exception as e:
+                    print(f"[BŁĄD przy zapisie node'a {idx}]: {e}")
+
+            for event in self.game_history_events:
+                try:
+                    ET.SubElement(root, "event", {
+                        "type": event["type"],
+                        "from": str(event["from"]),
+                        "to": str(event["to"]),
+                        "by": event["by"],
+                        "time": str(event["time"])
+                    })
+                except Exception as e:
+                    print(f"[BŁĄD przy zapisie eventu]: {e}")
+
+            tree = ET.ElementTree(root)
+            tree.write(filename, encoding="utf-8", xml_declaration=True)
+            print(f"✅ Zapisano historię do pliku: {filename}")
+
+        except Exception as e:
+            print(f"[FATALNY BŁĄD] save_game_history: {e}")
+        # Dodaj zapis do MongoDB
+        try:
+            game_history_collection.insert_one({
+                "level": self.level_name,
+                "duration": 120 - self.round_time_seconds,
+                "nodes": [
+                    {
+                        "x": int(node.pos().x()),
+                        "y": int(node.pos().y()),
+                        "color": node.color,
+                        "units": node.unit_count,
+                        "type": node.node_type
+                    }
+                    for node in self.nodes
+                ],
+                "events": self.game_history_events
+            })
+            print("✅ Historia gry zapisana do MongoDB.")
+        except Exception as e:
+            print(f"[Błąd MongoDB] {e}")
+
+        try:
+            json_data = {
+                "level": self.level_name,
+                "duration": 120 - self.round_time_seconds,
+                "nodes": [
+                    {
+                        "x": int(node.pos().x()),
+                        "y": int(node.pos().y()),
+                        "color": node.color,
+                        "units": node.unit_count,
+                        "type": node.node_type
+                    }
+                    for node in self.nodes
+                ],
+                "events": self.game_history_events
+            }
+
+            with open("historia.json", "w", encoding="utf-8") as f:
+                json.dump(json_data, f, indent=4, ensure_ascii=False)
+
+            print("✅ Zapisano historię do JSON (historia.json)")
+        except Exception as e:
+            print(f"[Błąd JSON] {e}")
 
 
 class DraggableLabel(QLabel):
