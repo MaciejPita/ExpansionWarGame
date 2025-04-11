@@ -1,7 +1,9 @@
+import threading
+
 from PyQt5.QtCore import Qt, QRegExp, QTimer
 from PyQt5.QtGui import QPixmap, QRegExpValidator
 from PyQt5.QtWidgets import QLabel, QWidget, QVBoxLayout, QMainWindow, QPushButton, QButtonGroup, QRadioButton, \
-    QHBoxLayout, QLineEdit, QTextEdit
+    QHBoxLayout, QLineEdit, QTextEdit, QMessageBox
 from pymongo import MongoClient
 import json
 import os
@@ -10,6 +12,12 @@ from levels import LEVELS
 from mongo_client import game_history_collection
 
 from turn_manager import TurnManager
+import server
+import client
+from server import start_server
+from client import connect_to_server
+from network_turn_manager import NetworkTurnManager
+
 
 
 
@@ -95,7 +103,18 @@ class MainWindow(QMainWindow):
         mode_container_layout.addWidget(self.mode_online)
 
         self.ip_input = IPPortInput()
+
+        # Wybór roli: serwer czy klient
+        self.role_radio_server = QRadioButton("Serwer")
+        self.role_radio_client = QRadioButton("Klient")
+        self.role_radio_server.setChecked(True)
+
+        mode_container_layout.addWidget(self.role_radio_server)
+        mode_container_layout.addWidget(self.role_radio_client)
+
         mode_container_layout.addWidget(self.ip_input)
+
+
 
         mode_container_layout.addStretch()
 
@@ -117,6 +136,12 @@ class MainWindow(QMainWindow):
                 background-color: rgba(56, 142, 60, 220);
             }
         """
+
+        # Przycisk Połącz
+        btn_connect = QPushButton("🔌 Połącz")
+        btn_connect.setStyleSheet(button_style)
+        btn_connect.clicked.connect(self.connect_network_game)
+        mode_container_layout.addWidget(btn_connect)
 
         btn_show_xml = QPushButton("\U0001F4C2 Zobacz zapis historii")
         btn_show_xml.setStyleSheet(button_style)
@@ -175,6 +200,39 @@ class MainWindow(QMainWindow):
 
         widget.setLayout(layout)
         self.setCentralWidget(widget)
+
+    def connect_network_game(self):
+        ip_port = self.ip_input.input.text()
+        if ":" not in ip_port:
+            QMessageBox.warning(self, "Błąd", "Niepoprawny adres IP i port. Użyj formatu IP:PORT.")
+            return
+
+        ip, port = ip_port.split(":")
+        port = int(port)
+
+        if self.role_radio_server.isChecked():
+            self.player_type = "server"
+            threading.Thread(target=start_server, args=(port,), daemon=True).start()
+            import server
+            self.network = server
+
+
+
+        else:
+            self.player_type = "client"
+            try:
+                import client
+                client.connect_to_server(ip, port)
+                self.network = client
+
+                # Wysyłka testowej wiadomości
+                self.network.send_test_message()
+
+            except Exception as e:
+                QMessageBox.critical(self, "Błąd połączenia", f"Nie udało się połączyć: {e}")
+                return
+
+        QMessageBox.information(self, "Sukces", "Połączono! Teraz wybierz poziom gry.")
 
     def show_history_xml(self):
         self._display_text_history(f"historia_{self.last_level_name}.xml", "📖 Historia gry")
@@ -245,12 +303,51 @@ class MainWindow(QMainWindow):
 
 
         elif self.selected_game_mode == "Gra sieciowa":
-            label = QLabel(f"\u0141\u0105cz\u0119 si\u0119 z: {self.ip_input.get_value()}")
-            container = QWidget()
-            layout = QVBoxLayout()
-            layout.addWidget(label)
-            container.setLayout(layout)
-            self.setCentralWidget(container)
+            ip_port = self.ip_input.input.text()
+            if ":" not in ip_port:
+                QMessageBox.warning(self, "Błąd", "Niepoprawny adres IP i port. Użyj formatu IP:PORT.")
+                return
+            ip, port = ip_port.split(":")
+            port = int(port)
+            if self.role_radio_server.isChecked():
+                self.player_type = "server"
+            else:
+                self.player_type = "client"
+            # start połączenia
+            if self.player_type == "server":
+                threading.Thread(target=start_server, args=(port,), daemon=True).start()
+                self.network = server
+            else:
+                self.network = client
+            level_data = LEVELS[level_name]
+            self.game_view = GameView(level_data, level_name, self, mode="network")
+            self.last_level_name = level_name
+            self.setCentralWidget(self.game_view)
+            is_host = self.player_type == "server"
+
+            class NetworkWrapper:
+                def __init__(self, network_module):
+                    self.network = network_module
+
+                def send_data(self, data):
+                    self.network.send_data(data)
+
+                def receive_data(self):
+                    return self.network.receive_data()
+
+            self.turn_manager = NetworkTurnManager(NetworkWrapper(self.network), is_host)
+            self.turn_manager.turn_changed.connect(self.on_turn_changed)
+            self.turn_manager.remote_move_received.connect(self.apply_opponent_move)
+
+            QTimer.singleShot(0, self.turn_manager.start)
+
+    def apply_opponent_move(self, move_data):
+        """Wykonaj ruch przeciwnika na planszy."""
+        if hasattr(self, 'game_view') and self.game_view:
+            from_pos = move_data.get("from")
+            to_pos = move_data.get("to")
+            if from_pos and to_pos:
+                self.game_view.scene.perform_connection(from_pos, to_pos, triggered_by_network=True)
 
 
 class IPPortInput(QWidget):
@@ -275,3 +372,5 @@ class IPPortInput(QWidget):
 
     def is_valid(self):
         return self.input.hasAcceptableInput()
+
+

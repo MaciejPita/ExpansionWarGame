@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 
 
 
+
 class GameEndOverlay(QGraphicsItem):
     def __init__(self, message, color, is_win=True, confetti=True):
         super().__init__()
@@ -468,6 +469,27 @@ class GameView(QGraphicsView):
 
             QTimer.singleShot(5000, self.remove_hint_line)
 
+    def perform_connection(self, from_pos, to_pos, triggered_by_network=False):
+        from_node = next((n for n in self.nodes if int(n.pos().x()) == from_pos[0] and int(n.pos().y()) == from_pos[1]),
+                         None)
+        to_node = next((n for n in self.nodes if int(n.pos().x()) == to_pos[0] and int(n.pos().y()) == to_pos[1]), None)
+
+        if not from_node or not to_node:
+            print("[DEBUG] perform_connection: Nie znaleziono węzłów")
+            return
+
+        if from_node.can_connect() and to_node.can_connect():
+            line = ConnectionLine(from_node, to_node, self.scene)
+            self.scene.addItem(line)
+            from_node.register_connection()
+            self.log_event(
+                type_="attack" if to_node.color_name == "red" else "support",
+                source=self.nodes.index(from_node),
+                target=self.nodes.index(to_node),
+                by="network" if triggered_by_network else "player"
+            )
+            self.check_game_over()
+
     class DraggableLabel(QLabel):
         def __init__(self, pixmap, node_type, parent_view):
             super().__init__()
@@ -606,6 +628,21 @@ class GameView(QGraphicsView):
                         if hasattr(self.main_window, 'turn_manager'):
                             self.main_window.turn_manager.end_turn()
 
+                    # DODANE: send_move w trybie sieciowym
+                    if self.mode == "network":
+                        if not self.current_player or self.has_made_move:
+                            return
+                        if self.selected_node.color_name != self.current_player:
+                            print("[DEBUG] Niedozwolony ruch - nie twoja tura (network)")
+                            return
+
+                        self.has_made_move = True
+
+                        if hasattr(self.main_window, 'turn_manager'):
+                            from_pos = [int(self.selected_node.pos().x()), int(self.selected_node.pos().y())]
+                            to_pos = [int(target_item.pos().x()), int(target_item.pos().y())]
+                            self.main_window.turn_manager.send_move({"from": from_pos, "to": to_pos})
+
                     line = ConnectionLine(self.selected_node, target_item, self.scene)
                     self.scene.addItem(line)
                     self.selected_node.register_connection()
@@ -615,11 +652,13 @@ class GameView(QGraphicsView):
                         target=self.nodes.index(target_item),
                         by="player"
                     )
+
             self.check_game_over()
 
         self.selected_node = None
         super().mouseReleaseEvent(event)
 
+        # Obsługa dodawania nowego węzła przez przeciąganie
         if hasattr(self, 'drag_node_item') and self.drag_node_item:
             scene_pos = self.mapToScene(event.pos())
             valid = True
