@@ -7,9 +7,7 @@ from PyQt5.QtGui import QPixmap, QBrush, QColor, QPainter
 from PyQt5.QtWidgets import QLabel, QGraphicsPixmapItem, QHBoxLayout, QWidget, QPushButton, QGraphicsView, \
     QGraphicsScene, QVBoxLayout, QGraphicsItem
 from mongo_client import game_history_collection
-
 from nodes import BaseNode, ConnectionLine, PreviewLine, HintLine
-
 import xml.etree.ElementTree as ET
 
 
@@ -79,9 +77,12 @@ class GameEndOverlay(QGraphicsItem):
 
 class GameView(QGraphicsView):
     def __init__(self, level_data, level_name, main_window, mode="single"):
+        super().__init__(main_window)
+
+        print("[DEBUG] GameView init started")
 
         self.mode = mode
-        super().__init__()
+        self.main_window = main_window
         self.scene = QGraphicsScene()
         self.setScene(self.scene)
         self.setRenderHint(QPainter.Antialiasing)
@@ -93,10 +94,11 @@ class GameView(QGraphicsView):
         self.level_name = level_name
         self.main_window = main_window
         self.create_scene()
-
         self.ai_timer = QTimer()
         self.ai_timer.timeout.connect(self.enemy_ai_turn)
-        self.ai_timer.start(3000)
+
+        if self.mode == "single":
+            self.ai_timer.start(3000)
 
         self.hint_line = None
 
@@ -131,6 +133,19 @@ class GameView(QGraphicsView):
         self.node_placement_used = False  # gracz może tylko raz dodać węzeł
 
         self.game_history_events = []
+
+        self.current_player = None
+        self.has_made_move = False
+        self.is_ready = False
+
+        self.node_added_by = {
+            "green": False,
+            "red": False
+        }
+
+    def set_current_player(self, color):
+        self.current_player = color
+        self.has_made_move = False
 
     def log_event(self, type_, source, target, by):
         time_stamp = 120 - self.round_time_seconds
@@ -206,7 +221,7 @@ class GameView(QGraphicsView):
         self.overlay_ref = GameEndOverlay(message, color, is_win=is_win)
         self.scene.addItem(self.overlay_ref)
 
-        # Bezpieczny powrót do menu
+        # safe pworót do menu
         if hasattr(self, "main_window") and self.main_window and hasattr(self.main_window, "show_level_selector"):
             QTimer.singleShot(6000, self.main_window.show_level_selector)
         else:
@@ -221,19 +236,14 @@ class GameView(QGraphicsView):
 
         for red_node in red_nodes:
             if red_node.unit_count < 2:
-                continue  # Zbyt mało jednostek, nie atakuje
-
-            # Szukaj najsłabszego zielonego węzła słabszego od czerwonego
+                continue
             weak_targets = [g for g in green_nodes if g.unit_count < red_node.unit_count]
 
             if not weak_targets:
-                # Brak słabszych celów – czekamy i "ładujemy" węzeł (czyli nic nie robimy)
                 continue
 
-            # Wybierz najsłabszy z możliwych celów
             target = min(weak_targets, key=lambda g: g.unit_count)
 
-            # Stwórz połączenie ataku
             if red_node.can_connect() and target.can_connect():
                 line = ConnectionLine(red_node, target, self.scene)
                 self.scene.addItem(line)
@@ -271,7 +281,6 @@ class GameView(QGraphicsView):
             self.nodes.append(node)
             self.scene.addItem(node)
 
-        # Dodaj przyciski
         self.add_menu_buttons()
 
     def add_menu_buttons(self):
@@ -316,7 +325,6 @@ class GameView(QGraphicsView):
         proxy = self.scene.addWidget(self.menu_widget)
         proxy.setZValue(10)
 
-        # Połącz z aktualizacją pozycji – wywołaj teraz i przy każdym resize
         self.menu_proxy = proxy
         self.update_menu_position()
 
@@ -332,9 +340,7 @@ class GameView(QGraphicsView):
         node_layout.setSpacing(10)
 
         for node_type in ["circle", "plus", "triangle"]:
-            pixmap = QPixmap(f":/images/green_{'node' if node_type == 'circle' else node_type}.png").scaled(48, 48,
-                                                                                                            Qt.KeepAspectRatio,
-                                                                                                            Qt.SmoothTransformation)
+            pixmap = QPixmap(f":/images/green_{'node' if node_type == 'circle' else node_type}.png").scaled(48, 48,Qt.KeepAspectRatio,Qt.SmoothTransformation)
             label = DraggableLabel(pixmap, node_type, self)
             node_layout.addWidget(label)
 
@@ -344,8 +350,12 @@ class GameView(QGraphicsView):
         self.update_node_menu_position()
 
     def start_drag_node(self, node_type, pixmap):
-        if self.node_placement_used:
-            return
+        if self.mode == "2_players":
+            if self.node_added_by.get(self.current_player, True):
+                return
+        else:
+            if self.node_placement_used:
+                return
 
         self.drag_node_type = node_type
         self.drag_node_pixmap = pixmap
@@ -379,8 +389,8 @@ class GameView(QGraphicsView):
         if not green_nodes or not red_nodes:
             return
 
-        # Analiza dominacji
-        dominance = len(green_nodes) - len(red_nodes)  # >0 = przewaga gracza
+
+        dominance = len(green_nodes) - len(red_nodes)
 
         best_score = float('-inf')
         best_pair = None
@@ -402,19 +412,18 @@ class GameView(QGraphicsView):
 
                 if target.color_name == "red":
                     if target.unit_count >= source.unit_count:
-                        continue  # nie atakuj silniejszych
+                        continue
 
-                    # Bazowa ocena ataku
                     score += (source.unit_count - target.unit_count) * 10
 
-                    # Karanie za odległość
+                    # Kara za odleglosc
                     score -= distance * 0.2
 
-                    # Priorytet dla node'ów plus
+                    # priorytet plusów
                     if target.node_type == "plus":
                         score += 20
 
-                    # Premia za bliskość innych zielonych
+                    # premia za zielonego blisko
                     allies_near = [a for a in green_nodes if (a.pos() - target.pos()).manhattanLength() < 150]
                     score += len(allies_near) * 5
 
@@ -424,11 +433,11 @@ class GameView(QGraphicsView):
                     if target.unit_count >= source.unit_count:
                         continue
 
-                    # Bazowa ocena wsparcia
+
                     score += (source.unit_count - target.unit_count) * 3
                     score -= distance * 0.1
 
-                    # Jeśli w pobliżu są wrogowie – zwiększ priorytet
+                    # zwiskzamy priorytet gdy wrogowie w poblizu
                     enemies_near = [e for e in red_nodes if (e.pos() - target.pos()).manhattanLength() < 200]
                     if enemies_near and target.unit_count < 6:
                         score += 15
@@ -436,14 +445,14 @@ class GameView(QGraphicsView):
                     action_type = "support"
 
                 else:
-                    continue  # nieistotne
+                    continue
 
-                # Zachowanie zależne od dominacji
+
                 if dominance < 0 and action_type == "support":
-                    score += 10  # gracz w defensywie – wspieraj
+                    score += 10
 
                 if dominance > 2 and action_type == "attack":
-                    score += 10  # gracz dominuje – atakuj więcej
+                    score += 10
 
                 if score > best_score:
                     best_score = score
@@ -457,7 +466,6 @@ class GameView(QGraphicsView):
             target.start_pulsing()
             QTimer.singleShot(5000, self.stop_hint_animation)
 
-            # Automatyczne usunięcie po 5 sekundach
             QTimer.singleShot(5000, self.remove_hint_line)
 
     class DraggableLabel(QLabel):
@@ -499,7 +507,6 @@ class GameView(QGraphicsView):
             if target.current_connections >= target.max_connections:
                 continue
 
-            # Dodaj tylko jeśli jeszcze niepołączone i nieprzekroczono limitów
             line = PreviewLine(source_node, target)
             self.scene.addItem(line)
             self.preview_lines.append(line)
@@ -525,13 +532,29 @@ class GameView(QGraphicsView):
             y = view_height - label_size.height() - margin
             self.round_proxy.setPos(x, y)
 
+    def update_node_selection_icons(self, color):
+        if not hasattr(self, 'node_selection_widget'):
+            return
+
+        layout = self.node_selection_widget.layout()
+        for i in range(layout.count()):
+            item = layout.itemAt(i).widget()
+            if isinstance(item, DraggableLabel):
+                node_type = item.node_type
+                new_pixmap = QPixmap(f":/images/{color}_{'node' if node_type == 'circle' else node_type}.png").scaled(
+                    48, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                item.setPixmap(new_pixmap)
+                item.repaint()
+
     def mousePressEvent(self, event):
         item = self.itemAt(event.pos())
         while item and not isinstance(item, BaseNode):
             item = item.parentItem()
 
-        if isinstance(item, BaseNode) and item.is_player:
+        if isinstance(item, BaseNode) and (self.mode != "2_players" or item.color_name == self.current_player):
             self.selected_node = item
+
         else:
             self.selected_node = None
 
@@ -542,7 +565,7 @@ class GameView(QGraphicsView):
     def mouseMoveEvent(self, event):
         if hasattr(self, 'drag_node_item') and self.drag_node_item:
             scene_pos = self.mapToScene(event.pos())
-            self.drag_node_item.setPos(scene_pos - QPointF(24, 24))  # Wycentrowanie
+            self.drag_node_item.setPos(scene_pos - QPointF(24, 24))
         super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event):
@@ -571,6 +594,18 @@ class GameView(QGraphicsView):
             target_item = self.itemAt(event.pos())
             if isinstance(target_item, BaseNode) and target_item != self.selected_node:
                 if self.selected_node.can_connect() and target_item.can_connect():
+
+                    if self.mode == "2_players":
+                        if not self.current_player or self.has_made_move:
+                            return
+                        if self.selected_node.color_name != self.current_player:
+                            print("[DEBUG] Niedozwolony ruch - nie twoja tura")
+                            return
+
+                        self.has_made_move = True
+                        if hasattr(self.main_window, 'turn_manager'):
+                            self.main_window.turn_manager.end_turn()
+
                     line = ConnectionLine(self.selected_node, target_item, self.scene)
                     self.scene.addItem(line)
                     self.selected_node.register_connection()
@@ -595,15 +630,24 @@ class GameView(QGraphicsView):
                     break
 
             if valid:
+                player_color = self.current_player if self.mode == "2_players" else "green"
+
                 new_node = BaseNode(
                     x=scene_pos.x(), y=scene_pos.y(),
-                    radius=30, color="green",
-                    is_player=True, initial_units=8,
-                    node_type=self.drag_node_type, max_connections=3
+                    radius=30,
+                    color=player_color,
+                    is_player=(player_color == "green"),
+                    initial_units=8,
+                    node_type=self.drag_node_type,
+                    max_connections=3
                 )
+
                 self.scene.addItem(new_node)
                 self.nodes.append(new_node)
-                self.node_placement_used = True
+                if self.mode == "2_players":
+                    self.node_added_by[self.current_player] = True
+                else:
+                    self.node_placement_used = True
 
             self.scene.removeItem(self.drag_node_item)
             del self.drag_node_item
@@ -688,7 +732,6 @@ class GameView(QGraphicsView):
 
         except Exception as e:
             print(f"[FATALNY BŁĄD] save_game_history: {e}")
-        # Dodaj zapis do MongoDB
         try:
             game_history_collection.insert_one({
                 "level": self.level_name,

@@ -1,14 +1,16 @@
-from PyQt5.QtCore import Qt, QRegExp
+from PyQt5.QtCore import Qt, QRegExp, QTimer
 from PyQt5.QtGui import QPixmap, QRegExpValidator
 from PyQt5.QtWidgets import QLabel, QWidget, QVBoxLayout, QMainWindow, QPushButton, QButtonGroup, QRadioButton, \
     QHBoxLayout, QLineEdit, QTextEdit
 from pymongo import MongoClient
 import json
 import os
-
 from game_view import GameView
 from levels import LEVELS
 from mongo_client import game_history_collection
+
+from turn_manager import TurnManager
+
 
 
 class MainWindow(QMainWindow):
@@ -35,6 +37,16 @@ class MainWindow(QMainWindow):
         elif self.mode_online.isChecked():
             self.selected_game_mode = "Gra sieciowa"
 
+    def on_turn_changed(self, player_color, turn_number):
+        print(f"[DEBUG] on_turn_changed: {player_color}, turn {turn_number}")
+
+        if hasattr(self, 'game_view'):
+            self.game_view.set_current_player(player_color)
+            if hasattr(self.game_view, "update_node_selection_icons"):
+                self.game_view.update_node_selection_icons(player_color)
+
+        self.statusBar().showMessage(f"Tura gracza {player_color.upper()} — Tura {turn_number}")
+
     def show_level_selector(self):
         widget = QWidget()
         layout = QHBoxLayout()
@@ -42,7 +54,6 @@ class MainWindow(QMainWindow):
         layout.setSpacing(50)
         layout.setAlignment(Qt.AlignCenter)
 
-        # Tryb gry (lewa kolumna)
         mode_layout = QVBoxLayout()
         mode_layout.setAlignment(Qt.AlignTop)
 
@@ -75,7 +86,7 @@ class MainWindow(QMainWindow):
                 QRadioButton::indicator { width: 18px; height: 18px; }
             """)
             self.mode_group.addButton(btn)
-            btn.toggled.connect(self.update_game_mode)  # <-- Kluczowa linia
+            btn.toggled.connect(self.update_game_mode)
 
         mode_container_layout.addWidget(mode_label)
         mode_container_layout.addSpacing(10)
@@ -88,7 +99,6 @@ class MainWindow(QMainWindow):
 
         mode_container_layout.addStretch()
 
-        # Historia przyciski
         button_style = """
             QPushButton {
                 background-color: rgba(255, 255, 255, 180);
@@ -132,7 +142,7 @@ class MainWindow(QMainWindow):
 
         mode_layout.addWidget(mode_container)
 
-        # Poziomy (prawa kolumna)
+
         level_layout = QVBoxLayout()
         level_layout.setAlignment(Qt.AlignTop)
 
@@ -214,18 +224,26 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
     def start_game(self, level_name):
+
         if self.selected_game_mode == "1 gracz":
             level_data = LEVELS[level_name]
             self.game_view = GameView(level_data, level_name, self, mode="single")
             self.last_level_name = level_name
             self.setCentralWidget(self.game_view)
         elif self.selected_game_mode == "2 graczy lokalnie":
-            label = QLabel("Tryb lokalny niezaimplementowany.")
-            container = QWidget()
-            layout = QVBoxLayout()
-            layout.addWidget(label)
-            container.setLayout(layout)
-            self.setCentralWidget(container)
+
+            print("[DEBUG] start_game called with level:", level_name)
+
+            level_data = LEVELS[level_name]
+            self.game_view = GameView(level_data, level_name, self, mode="2_players")
+            self.last_level_name = level_name
+            self.setCentralWidget(self.game_view)
+
+            self.turn_manager = TurnManager()
+            self.turn_manager.turn_changed.connect(self.on_turn_changed)
+            QTimer.singleShot(0, self.turn_manager.start)
+
+
         elif self.selected_game_mode == "Gra sieciowa":
             label = QLabel(f"\u0141\u0105cz\u0119 si\u0119 z: {self.ip_input.get_value()}")
             container = QWidget()
