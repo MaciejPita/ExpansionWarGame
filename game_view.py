@@ -470,8 +470,7 @@ class GameView(QGraphicsView):
             QTimer.singleShot(5000, self.remove_hint_line)
 
     def perform_connection(self, from_pos, to_pos, triggered_by_network=False):
-        from_node = next((n for n in self.nodes if int(n.pos().x()) == from_pos[0] and int(n.pos().y()) == from_pos[1]),
-                         None)
+        from_node = next((n for n in self.nodes if int(n.pos().x()) == from_pos[0] and int(n.pos().y()) == from_pos[1]),None)
         to_node = next((n for n in self.nodes if int(n.pos().x()) == to_pos[0] and int(n.pos().y()) == to_pos[1]), None)
 
         if not from_node or not to_node:
@@ -641,7 +640,11 @@ class GameView(QGraphicsView):
                         if hasattr(self.main_window, 'turn_manager'):
                             from_pos = [int(self.selected_node.pos().x()), int(self.selected_node.pos().y())]
                             to_pos = [int(target_item.pos().x()), int(target_item.pos().y())]
-                            self.main_window.turn_manager.send_move({"from": from_pos, "to": to_pos})
+                            self.main_window.turn_manager.send_move({
+                                "action": "connect",
+                                "from": from_pos,
+                                "to": to_pos
+                            })
 
                     line = ConnectionLine(self.selected_node, target_item, self.scene)
                     self.scene.addItem(line)

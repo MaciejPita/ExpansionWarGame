@@ -1,6 +1,8 @@
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject
 import json
 import threading
+from PyQt5.QtCore import QMetaObject, Q_ARG, Qt
+from PyQt5.QtCore import pyqtSlot
 
 class NetworkTurnManager(QObject):
     turn_changed = pyqtSignal(str, int)  # color, turn number
@@ -34,9 +36,12 @@ class NetworkTurnManager(QObject):
         self.end_turn()
 
     def send_move(self, move_data):
-        """move_data = {"from": [x1, y1], "to": [x2, y2]}"""
-        self.network.send(json.dumps(move_data))
-        self.end_turn()
+        try:
+            self.network.send(json.dumps(move_data))
+            print(f"[NETWORK] Wysłano ruch: {move_data}")
+            self.end_turn()
+        except Exception as e:
+            print(f"[ERROR] Błąd przy wysyłaniu ruchu: {e}")
 
     def end_turn(self):
         self.turn_timer.stop()
@@ -52,7 +57,19 @@ class NetworkTurnManager(QObject):
             try:
                 data = self.network.receive_data()
                 move_data = json.loads(data)
-                QTimer.singleShot(0, lambda data=move_data: self.remote_move_received.emit(data))
-                self.end_turn()
+                print(f"[NETWORK] Otrzymano dane: {move_data}")
+
+                if move_data.get("action") == "connect":
+                    # Zamiast emitować sygnał od razu:
+                    QMetaObject.invokeMethod(self, "_emit_remote_move", Qt.QueuedConnection, Q_ARG(dict, move_data))
+                    QTimer.singleShot(0, self.end_turn)  # WAŻNE: też w GUI
+                else:
+                    print(f"[WARNING] Nieznana akcja: {move_data.get('action')}")
             except Exception as e:
-                print("Error receiving move:", e)
+                print(f"[ERROR] Błąd odbioru danych: {e}")
+
+    @pyqtSlot(dict)
+    def _emit_remote_move(self, move_data):
+        self.remote_move_received.emit(move_data)
+
+

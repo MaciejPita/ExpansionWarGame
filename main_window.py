@@ -302,6 +302,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.turn_manager.start)
 
 
+
+
+
+
         elif self.selected_game_mode == "Gra sieciowa":
             ip_port = self.ip_input.input.text()
             if ":" not in ip_port:
@@ -329,7 +333,7 @@ class MainWindow(QMainWindow):
                 def __init__(self, network_module):
                     self.network = network_module
 
-                def send_data(self, data):
+                def send(self, data):
                     self.network.send_data(data)
 
                 def receive_data(self):
@@ -342,12 +346,15 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.turn_manager.start)
 
     def apply_opponent_move(self, move_data):
-        """Wykonaj ruch przeciwnika na planszy."""
-        if hasattr(self, 'game_view') and self.game_view:
-            from_pos = move_data.get("from")
-            to_pos = move_data.get("to")
-            if from_pos and to_pos:
-                self.game_view.scene.perform_connection(from_pos, to_pos, triggered_by_network=True)
+        print(f"[APPLY] Ruch przeciwnika: {move_data}")
+        from_pos = move_data.get("from")
+        to_pos = move_data.get("to")
+        if not (from_pos and to_pos):
+            print(f"[ERROR] Niepełne dane ruchu: {move_data}")
+            return
+
+        if hasattr(self, 'game_view'):
+            QTimer.singleShot(0, lambda: self.game_view.perform_connection(from_pos, to_pos, triggered_by_network=True))
 
 
 class IPPortInput(QWidget):
