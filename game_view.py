@@ -351,6 +351,9 @@ class GameView(QGraphicsView):
         self.update_node_menu_position()
 
     def start_drag_node(self, node_type, pixmap):
+        if self.mode == "network":
+                print("Dodawanie węzłów zablokowane w trybie sieciowym.")
+                return
         if self.mode == "2_players":
             if self.node_added_by.get(self.current_player, True):
                 return

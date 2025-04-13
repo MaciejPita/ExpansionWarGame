@@ -1,5 +1,4 @@
 import socket
-
 conn = None
 
 def connect_to_server(ip: str, port: int = 12345):

@@ -15,8 +15,6 @@ def start_server(port=12345):
     print(f"[SERVER] Czekam na gracza na porcie {port}...")
     conn, addr = server.accept()
     print(f"[SERVER] Połączono z: {addr}")
-
-    # Odbiór testowej wiadomości dopiero po połączeniu
     receive_test_message()
 
 

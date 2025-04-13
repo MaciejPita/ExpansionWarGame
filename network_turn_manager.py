@@ -60,7 +60,7 @@ class NetworkTurnManager(QObject):
                 print(f"[NETWORK] Otrzymano dane: {move_data}")
 
                 if move_data.get("action") == "connect":
-                    # Zamiast emitować sygnał od razu:
+                    # Zamiast emitować sygnał od razu robimy bo neida sie gui edytowac z innego watku niz glowny
                     QMetaObject.invokeMethod(self, "_emit_remote_move", Qt.QueuedConnection, Q_ARG(dict, move_data))
                     QTimer.singleShot(0, self.end_turn)  # WAŻNE: też w GUI
                 else:
