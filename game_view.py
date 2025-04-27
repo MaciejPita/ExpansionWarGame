@@ -99,14 +99,14 @@ class GameView(QGraphicsView):
         self.ai_timer.timeout.connect(self.enemy_ai_turn)
 
         if self.mode == "single":
-            self.ai_timer.start(3000)
+            self.ai_timer.start(2000)
 
         self.hint_line = None
 
         self.preview_lines = []
         self.preview_visible = False
 
-        self.round_time_seconds = 120  # 2 minuty
+        self.round_time_seconds = 120  # 2 min
         self.round_timer = QTimer()
         self.round_timer.timeout.connect(self.update_round_timer)
         self.round_timer.start(1000)
@@ -235,26 +235,70 @@ class GameView(QGraphicsView):
         if not red_nodes or not green_nodes:
             return
 
+        best_move = None
+        best_score = float('-inf')
+
         for red_node in red_nodes:
-            if red_node.unit_count < 2:
-                continue
-            weak_targets = [g for g in green_nodes if g.unit_count < red_node.unit_count]
-
-            if not weak_targets:
+            if red_node.unit_count < 2 or not red_node.can_connect():
                 continue
 
-            target = min(weak_targets, key=lambda g: g.unit_count)
+            # Possibble to connect
+            possible_targets = [node for node in self.nodes if node != red_node and node.can_connect()]
 
-            if red_node.can_connect() and target.can_connect():
-                line = ConnectionLine(red_node, target, self.scene)
-                self.scene.addItem(line)
-                red_node.register_connection()
-                self.log_event(
-                    type_="attack",
-                    source=self.nodes.index(red_node),
-                    target=self.nodes.index(target),
-                    by="AI"
-                )
+            for target_node in possible_targets:
+                distance = (red_node.pos() - target_node.pos()).manhattanLength()
+
+                score = 0
+
+                # attack green
+                if target_node.color_name == "green":
+                    if red_node.unit_count <= target_node.unit_count:
+                        continue  # if not enough cells not attacking
+
+                    score += (red_node.unit_count - target_node.unit_count) * 10
+                    score -= distance * 0.2  # closer is better
+                    if target_node.node_type == "plus":
+                        score += 20  # bonus for type plus of node
+
+                    # security of attack
+                    remaining_units = red_node.unit_count - target_node.unit_count
+                    if remaining_units < 3:
+                        score -= 30  # punishment for risk attack
+
+                # support red
+                elif target_node.color_name == "red":
+                    if target_node.unit_count >= red_node.unit_count:
+                        continue  # not sending if there is too  much
+
+                    score += (target_node.unit_count) * -5  # priority of sending, if lower then bigger priority
+                    score -= distance * 0.1
+
+                    # checking green around
+                    nearby_enemies = [
+                        n for n in green_nodes
+                        if (n.pos() - target_node.pos()).manhattanLength() < 200
+                    ]
+                    if nearby_enemies:
+                        score += 15  # if gree is endangered +priority
+
+                else:
+                    continue
+
+                if score > best_score:
+                    best_score = score
+                    best_move = (red_node, target_node)
+
+        if best_move:
+            source, target = best_move
+            line = ConnectionLine(source, target, self.scene)
+            self.scene.addItem(line)
+            source.register_connection()
+            self.log_event(
+                type_="attack" if target.color_name == "green" else "support",
+                source=self.nodes.index(source),
+                target=self.nodes.index(target),
+                by="AI"
+            )
 
         self.check_game_over()
 
